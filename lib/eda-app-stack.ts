@@ -9,6 +9,7 @@ import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as source from "aws-cdk-lib/aws-lambda-event-sources";
 
 
 import { Construct } from "constructs";
@@ -31,7 +32,9 @@ export class EDAAppStack extends cdk.Stack {
       partitionKey: { name: "name", type: dynamodb.AttributeType.STRING },
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       tableName: "Imagess",
+      stream: dynamodb.StreamViewType.NEW_IMAGE
     });
+
 
 
     // Integration infrastructure
@@ -39,10 +42,7 @@ export class EDAAppStack extends cdk.Stack {
     const imageProcessQueue = new sqs.Queue(this, "img-process-q", {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
     });
-
-    const mailerQ = new sqs.Queue(this, "mailer-q", {
-      receiveMessageWaitTime: cdk.Duration.seconds(10),
-    });
+    
 
     const dlq = new sqs.Queue(this, "img-dlq", {
       receiveMessageWaitTime: cdk.Duration.seconds(10),
@@ -129,6 +129,12 @@ export class EDAAppStack extends cdk.Stack {
       entry: `${__dirname}/../lambdas/mailer.ts`,
     });
 
+    mailerFn.addEventSource(
+      new source.DynamoEventSource(imagesTable, {
+        startingPosition: lambda.StartingPosition.LATEST
+    }))
+
+
       // S3 --> SQS
       imagesBucket.addEventNotification(
         s3.EventType.OBJECT_CREATED,
@@ -139,24 +145,13 @@ export class EDAAppStack extends cdk.Stack {
       new subs.SqsSubscription(imageProcessQueue)
     );
 
-    newImageTopic.addSubscription(new subs.SqsSubscription(mailerQ));
-
-
-
     // SQS --> Lambda
       const newImageEventSource = new events.SqsEventSource(imageProcessQueue, {
         batchSize: 5,
         maxBatchingWindow: cdk.Duration.seconds(5),
       });
-      
-    const newImageMailEventSource = new events.SqsEventSource(mailerQ, {
-      batchSize: 5,
-      maxBatchingWindow: cdk.Duration.seconds(5),
-    }); 
 
       processImageFn.addEventSource(newImageEventSource);
-
-      mailerFn.addEventSource(newImageMailEventSource); 
 
       rejectedImageFn.addEventSource(rejectedImageEventSource);
 
@@ -195,28 +190,6 @@ export class EDAAppStack extends cdk.Stack {
         rawMessageDelivery: true,
       })
  );
-
-     newImageTopic.addSubscription(
-      new subs.SqsSubscription(mailerQ, {
-        filterPolicyWithMessageBody: {
-          Records: sns.FilterOrPolicy.policy({
-            s3: sns.FilterOrPolicy.policy({
-              object: sns.FilterOrPolicy.policy({
-                key: sns.FilterOrPolicy.filter(
-                  sns.SubscriptionFilter.stringFilter({
-                    matchPrefixes: ["image"],
-                  })
-                ),
-              }),
-            }),
-           }),
-         },
-        rawMessageDelivery: true,
-      })
- );
-
-
-
       // Output
       
       new cdk.CfnOutput(this, "bucketName", {
